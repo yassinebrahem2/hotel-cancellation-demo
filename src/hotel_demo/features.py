@@ -31,6 +31,13 @@ FEATURES = [
     "total_of_special_requests",
 ]
 
+BOOKING_COLUMNS = [
+    "booking_id",
+    "booking_date",
+    "arrival_date",
+    *FEATURES,
+]
+
 CATEGORICAL = [
     "hotel",
     "meal",

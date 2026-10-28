@@ -4,7 +4,8 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from hotel_demo.pipeline import deploy, evaluate, rollback, train
+from hotel_demo.daily import daily
+from hotel_demo.pipeline import deploy, evaluate, rollback, score, train
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     # rollback
     subparsers.add_parser("rollback", help="Roll back production to previous version")
 
+    # score
+    score_parser = subparsers.add_parser("score", help="Score bookings for a given date")
+    score_parser.add_argument("--date", required=True, help="Business date YYYY-MM-DD")
+
+    # daily
+    daily_parser = subparsers.add_parser(
+        "daily", help="Run daily scoring and monitoring checks for a given date"
+    )
+    daily_parser.add_argument("--date", required=True, help="Business date YYYY-MM-DD")
+
     return parser
 
 
@@ -77,6 +88,14 @@ def main(args: Sequence[str] | None = None) -> int:
         elif parsed.subcommand == "rollback":
             prev_ver = rollback()
             print(f"Rolled back production to version {prev_ver}")
+            return 0
+        elif parsed.subcommand == "score":
+            score(date=parsed.date)
+            print(f"Scored bookings for {parsed.date}")
+            return 0
+        elif parsed.subcommand == "daily":
+            daily(date=parsed.date)
+            print(f"Daily job completed for {parsed.date}")
             return 0
         else:
             sys.stderr.write(f"Unknown subcommand: {parsed.subcommand}\n")

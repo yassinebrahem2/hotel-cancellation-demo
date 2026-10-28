@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
 from hotel_demo.features import (
+    BOOKING_COLUMNS,
     CATEGORICAL,
     FEATURES,
     MODEL_ALIAS,
@@ -252,3 +254,67 @@ def rollback() -> str:
     client.set_registered_model_alias(MODEL_NAME, MODEL_ALIAS, prev_ver)
     client.delete_registered_model_tag(MODEL_NAME, "previous_production")
     return prev_ver
+
+
+def score(date: str) -> Path:
+    """Score bookings for the given date using the production model.
+
+    Requires exactly the 27 booking columns in order. Writes predictions atomically
+    to data_dir() / "predictions" / f"{date}.parquet".
+    """
+    b_file = data_dir() / "bookings" / f"{date}.parquet"
+    if not b_file.exists():
+        raise FileNotFoundError(f"Bookings file not found: {b_file}")
+
+    df = pd.read_parquet(b_file)
+
+    actual_cols = list(df.columns)
+    missing = [c for c in BOOKING_COLUMNS if c not in actual_cols]
+    unexpected = [c for c in actual_cols if c not in BOOKING_COLUMNS]
+
+    if missing or unexpected:
+        raise ValueError(
+            f"Schema mismatch in {b_file}: missing columns: {missing}, unexpected columns: {unexpected}"
+        )
+
+    if actual_cols != BOOKING_COLUMNS:
+        raise ValueError(
+            f"Schema column order mismatch in {b_file}: expected {BOOKING_COLUMNS}, got {actual_cols}"
+        )
+
+    uri = tracking_uri()
+    mlflow.set_tracking_uri(uri)
+    client = MlflowClient(tracking_uri=uri)
+
+    try:
+        prod_mv = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+    except Exception as exc:
+        raise RuntimeError(f"No production model found for {MODEL_NAME}@{MODEL_ALIAS}") from exc
+
+    model_version = str(prod_mv.version)
+    model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}@{MODEL_ALIAS}")
+
+    X = prepare_features(df)
+    p_cancel = model.predict_proba(X)[:, 1]
+
+    pred_df = pd.DataFrame(
+        {
+            "booking_id": df["booking_id"].astype("int64"),
+            "business_date": str(date),
+            "model_version": str(model_version),
+            "p_cancel": p_cancel.astype("float64"),
+        }
+    )
+
+    pred_dir = data_dir() / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    target_file = pred_dir / f"{date}.parquet"
+    temp_file = pred_dir / f".tmp_{date}_{uuid.uuid4().hex}.parquet"
+    try:
+        pred_df.to_parquet(temp_file, index=False)
+        temp_file.replace(target_file)
+    finally:
+        if temp_file.exists():
+            temp_file.unlink(missing_ok=True)
+
+    return target_file

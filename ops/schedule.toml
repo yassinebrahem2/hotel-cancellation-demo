@@ -1,0 +1,4 @@
+[[jobs]]
+name = "daily"
+command = "hotel-demo daily --date {date}"
+every = 1
