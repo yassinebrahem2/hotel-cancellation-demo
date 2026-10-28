@@ -182,3 +182,15 @@ def test_accuracy_check_fires_and_stays_quiet(checks_env):
     assert res_fire["fired"] is True
     assert res_fire["value"] < 0.60
     assert res_fire["threshold"] == 0.60
+
+
+def test_accuracy_check_no_data_reports_no_data_and_does_not_fire(checks_env):
+    from hotel_demo.checks import accuracy
+
+    # Date with no predictions or labels in window
+    res = accuracy.run("2025-01-01")
+    assert res["check"] == "accuracy"
+    assert res["fired"] is False
+    assert res["value"] is None
+    assert res["threshold"] == 0.60
+    assert res["detail"] == "no data"

@@ -5,29 +5,9 @@ import importlib
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from hotel_demo.paths import data_dir
 from hotel_demo.pipeline import score
-
-
-def discover_checks() -> list[Any]:
-    """Dynamically discover all check modules in src/hotel_demo/checks/."""
-    importlib.invalidate_caches()
-    checks_dir = Path(__file__).parent / "checks"
-    modules = []
-    if checks_dir.exists():
-        for py_file in sorted(checks_dir.glob("*.py")):
-            if py_file.stem == "__init__":
-                continue
-            mod_name = f"hotel_demo.checks.{py_file.stem}"
-            if mod_name in sys.modules:
-                mod = importlib.reload(sys.modules[mod_name])
-            else:
-                mod = importlib.import_module(mod_name)
-            if hasattr(mod, "run") and callable(mod.run):
-                modules.append(mod)
-    return modules
 
 
 def daily(date: str) -> None:
@@ -72,18 +52,32 @@ def daily(date: str) -> None:
         errors.append(f"score: {exc}")
 
     # 2. Run dynamically discovered checks
-    check_modules = discover_checks()
-    for mod in check_modules:
-        job_name = getattr(mod, "CHECK_NAME", mod.__name__.split(".")[-1])
-        chk_started = datetime.datetime.now(datetime.UTC).isoformat()
-        try:
-            mod.run(date)
-            chk_ended = datetime.datetime.now(datetime.UTC).isoformat()
-            _log_job(job_name, chk_started, chk_ended, "success", None)
-        except Exception as exc:
-            chk_ended = datetime.datetime.now(datetime.UTC).isoformat()
-            _log_job(job_name, chk_started, chk_ended, "failure", str(exc))
-            errors.append(f"{job_name}: {exc}")
+    checks_dir = Path(__file__).parent / "checks"
+    if checks_dir.exists():
+        importlib.invalidate_caches()
+        for py_file in sorted(checks_dir.glob("*.py")):
+            if py_file.stem == "__init__":
+                continue
+            job_name = py_file.stem
+            chk_started = datetime.datetime.now(datetime.UTC).isoformat()
+            try:
+                mod_name = f"hotel_demo.checks.{py_file.stem}"
+                if mod_name in sys.modules:
+                    mod = importlib.reload(sys.modules[mod_name])
+                else:
+                    mod = importlib.import_module(mod_name)
+                job_name = getattr(mod, "CHECK_NAME", py_file.stem)
+                if not hasattr(mod, "run") or not callable(mod.run):
+                    raise AttributeError(
+                        f"Check module {mod_name} does not expose a callable run(date)"
+                    )
+                mod.run(date)
+                chk_ended = datetime.datetime.now(datetime.UTC).isoformat()
+                _log_job(job_name, chk_started, chk_ended, "success", None)
+            except Exception as exc:
+                chk_ended = datetime.datetime.now(datetime.UTC).isoformat()
+                _log_job(job_name, chk_started, chk_ended, "failure", str(exc))
+                errors.append(f"{job_name}: {exc}")
 
     if errors:
         raise RuntimeError(f"Daily job failed with {len(errors)} error(s): {'; '.join(errors)}")

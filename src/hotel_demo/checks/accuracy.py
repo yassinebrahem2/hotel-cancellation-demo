@@ -39,45 +39,35 @@ def run(date: str) -> dict[str, Any]:
     if pred_files:
         all_preds = pd.concat([pd.read_parquet(pf) for pf in pred_files], ignore_index=True)
 
-    if len(window_labels) == 0 or len(all_preds) == 0:
-        value = 0.0
-        fired = True
-        detail: dict[str, Any] = {
-            "total_evaluated": 0,
-            "correct": 0,
-            "message": "No labels or predictions available in window",
-        }
-    else:
+    merged = pd.DataFrame()
+    if len(window_labels) > 0 and len(all_preds) > 0:
         merged = window_labels[["booking_id", "is_canceled"]].merge(
             all_preds[["booking_id", "p_cancel"]],
             on="booking_id",
             how="inner",
         )
         merged = merged.drop_duplicates(subset=["booking_id"], keep="last")
-        if len(merged) == 0:
-            value = 0.0
-            fired = True
-            detail = {
-                "total_evaluated": 0,
-                "correct": 0,
-                "message": "No joined predictions found for labels in window",
-            }
-        else:
-            y_true = merged["is_canceled"].astype(int)
-            y_pred = (merged["p_cancel"] >= 0.5).astype(int)
-            total = len(merged)
-            correct = int((y_true == y_pred).sum())
-            value = float(correct / total)
-            fired = bool(value < THRESHOLD)
-            detail = {
-                "total_evaluated": total,
-                "correct": correct,
-            }
+
+    if len(merged) == 0:
+        fired = False
+        value = None
+        detail: Any = "no data"
+    else:
+        y_true = merged["is_canceled"].astype(int)
+        y_pred = (merged["p_cancel"] >= 0.5).astype(int)
+        total = len(merged)
+        correct = int((y_true == y_pred).sum())
+        value = float(correct / total)
+        fired = bool(value < THRESHOLD)
+        detail = {
+            "total_evaluated": total,
+            "correct": correct,
+        }
 
     record = {
         "check": CHECK_NAME,
         "fired": fired,
-        "value": float(value),
+        "value": value,
         "threshold": float(THRESHOLD),
         "detail": detail,
     }

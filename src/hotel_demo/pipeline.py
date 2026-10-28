@@ -9,6 +9,7 @@ from typing import Any
 import mlflow
 import pandas as pd
 from lightgbm import LGBMClassifier
+from mlflow.exceptions import MlflowException, RestException
 from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
 from sklearn.compose import ColumnTransformer
@@ -228,16 +229,20 @@ def deploy(version: int | str) -> None:
     mlflow.set_tracking_uri(uri)
     client = MlflowClient(tracking_uri=uri)
 
+    target_ver = str(version)
     try:
         current = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
-        prev_ver = current.version
-    except Exception:
+        prev_ver = str(current.version)
+    except (MlflowException, RestException):
         prev_ver = None
+
+    if prev_ver == target_ver:
+        return
 
     if prev_ver is not None:
         client.set_registered_model_tag(MODEL_NAME, "previous_production", prev_ver)
 
-    client.set_registered_model_alias(MODEL_NAME, MODEL_ALIAS, str(version))
+    client.set_registered_model_alias(MODEL_NAME, MODEL_ALIAS, target_ver)
 
 
 def rollback() -> str:
