@@ -45,6 +45,12 @@ uv run hotel-demo deploy --version 1
 
 # Roll back production alias to the previous production version
 uv run hotel-demo rollback
+
+# Score incoming bookings for a specific date
+uv run hotel-demo score --date 2026-01-11
+
+# Run daily scoring and all legacy monitoring checks
+uv run hotel-demo daily --date 2026-01-11
 ```
 
 ### Running Tests and Linting
@@ -57,6 +63,27 @@ uv run pytest
 uv run ruff check
 uv run ruff format --check
 ```
+
+## Production Schedule & CI Workflows
+
+### Production Schedule (`ops/schedule.toml`)
+
+The company's production schedule is defined in `ops/schedule.toml`. On the company's ops host, a scheduler runs the jobs configured in this file (such as `hotel-demo daily --date {date}`) on each business day. Model retraining and deployment are not automated on a schedule; engineers and data scientists execute `train`, `evaluate`, and `deploy` manually.
+
+### CI Smoke Run (`.github/workflows/scheduled.yml`)
+
+The GitHub Actions workflow `.github/workflows/scheduled.yml` serves as a CI smoke run executed on a daily schedule and manually via `workflow_dispatch`. It exercises the end-to-end ML lifecycle on a small slice of sample data: downloading the data archive, training a model version, evaluating performance metrics, deploying to `production`, and executing the daily batch job.
+
+This workflow is strictly a CI smoke test and is distinct from the company's production schedule defined in `ops/schedule.toml`.
+
+#### Configuring Sample Data URL (`SAMPLE_DATA_URL`)
+
+By default, the scheduled smoke run downloads `ops/sample-data.tar.gz` from the repository. To supply an alternate or external sample dataset location, set the `SAMPLE_DATA_URL` repository variable:
+
+1. Navigate to your repository on GitHub.
+2. Go to **Settings** > **Secrets and variables** > **Actions**.
+3. Under the **Variables** tab, click **New repository variable**.
+4. Set **Name** to `SAMPLE_DATA_URL` and **Value** to the direct URL of the `sample-data.tar.gz` archive.
 
 ## Data Credit & Licence
 

@@ -19,6 +19,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Run actionlint
+        if: runner.os == 'Linux'
+        run: |
+          curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          ./actionlint
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:

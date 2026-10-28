@@ -1,0 +1,64 @@
+name: Scheduled
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke-run:
+    name: Smoke Run
+    runs-on: ubuntu-latest
+    env:
+      HOTEL_DEMO_DATA: ${{ github.workspace }}/data
+      HOTEL_DEMO_MLFLOW: ${{ github.workspace }}/mlflow
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Fetch sample data
+        env:
+          SAMPLE_DATA_URL: ${{ vars.SAMPLE_DATA_URL }}
+        run: |
+          mkdir -p data
+          if [ -n "$SAMPLE_DATA_URL" ]; then
+            echo "Downloading sample data from SAMPLE_DATA_URL..."
+            curl -fSL "$SAMPLE_DATA_URL" -o sample-data.tar.gz
+          else
+            URL_MAIN="https://raw.githubusercontent.com/${{ github.repository }}/main/ops/sample-data.tar.gz"
+            URL_REF="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/ops/sample-data.tar.gz"
+            echo "Downloading sample data from $URL_MAIN..."
+            if ! curl -fSL "$URL_MAIN" -o sample-data.tar.gz; then
+              echo "Main branch returned error; falling back to $URL_REF..."
+              rm -f sample-data.tar.gz
+              curl -fSL "$URL_REF" -o sample-data.tar.gz
+            fi
+          fi
+          tar -xzf sample-data.tar.gz -C data
+          rm -f sample-data.tar.gz
+
+      - name: Train
+        run: |
+          VERSION=$(uv run hotel-demo train --cutoff 2026-01-10 --min-child-samples 5 | tail -n 1)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Evaluate
+        run: uv run hotel-demo evaluate --version "$VERSION"
+
+      - name: Deploy
+        run: uv run hotel-demo deploy --version "$VERSION"
+
+      - name: Daily
+        run: uv run hotel-demo daily --date 2026-01-11
