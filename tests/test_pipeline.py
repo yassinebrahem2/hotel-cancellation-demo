@@ -192,3 +192,24 @@ def test_rollback_without_prior_deploy_fails(isolated_env):
     train(cutoff="2026-01-10", min_child_samples=5)
     with pytest.raises(RuntimeError, match=r"[Nn]o previous"):
         rollback()
+
+
+def test_deploy_already_live_version_changes_nothing(isolated_env):
+    v1 = train(cutoff="2026-01-10", min_child_samples=5)
+    deploy(version=v1)
+    client = MlflowClient(tracking_uri=tracking_uri())
+    rm = client.get_registered_model(MODEL_NAME)
+    assert "previous_production" not in rm.tags
+
+    v2 = train(cutoff="2026-01-10", min_child_samples=5)
+    deploy(version=v2)
+    rm = client.get_registered_model(MODEL_NAME)
+    assert rm.tags["previous_production"] == str(v1)
+
+    # Deploying v2 again changes nothing: does not overwrite previous_production tag
+    deploy(version=v2)
+    rm = client.get_registered_model(MODEL_NAME)
+    assert rm.tags["previous_production"] == str(v1)
+
+    # Rollback still successfully rolls back to v1
+    assert rollback() == str(v1)

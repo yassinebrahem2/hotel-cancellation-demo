@@ -22,7 +22,7 @@ jobs:
       - name: Run actionlint
         if: runner.os == 'Linux'
         run: |
-          curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz" | tar -xz actionlint
           ./actionlint
 
       - name: Set up uv

@@ -118,6 +118,33 @@ def run(date: str) -> dict[str, Any]:
             custom_check_path.unlink()
 
 
+def test_daily_check_file_import_error_logs_failed_job_and_runs_others(daily_env):
+    checks_dir = Path(__file__).parent.parent / "src" / "hotel_demo" / "checks"
+    bad_check_path = checks_dir / "bad_syntax_check.py"
+    bad_check_path.write_text("invalid python syntax :::", encoding="utf-8")
+
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            daily("2026-01-11")
+        assert "bad_syntax_check" in str(excinfo.value)
+
+        # Check that jobs file logged bad_syntax_check as failure
+        jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
+        with jobs_file.open("r", encoding="utf-8") as f:
+            jobs = [json.loads(line) for line in f if line.strip()]
+
+        bad_job = next(j for j in jobs if j["job"] == "bad_syntax_check")
+        assert bad_job["status"] == "failure"
+        assert bad_job["error"] is not None
+
+        # Other checks (e.g. drift) still ran and logged to jobs
+        drift_job = next(j for j in jobs if j["job"] == "drift")
+        assert drift_job["status"] == "success"
+    finally:
+        if bad_check_path.exists():
+            bad_check_path.unlink()
+
+
 def test_daily_score_failure_still_runs_other_checks(daily_env):
     # Corrupt bookings file for 2026-01-15 with extra column
     b_file = data_dir() / "bookings" / "2026-01-15.parquet"
