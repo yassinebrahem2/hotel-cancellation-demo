@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from hotel_demo.cli import main
-from hotel_demo.daily import daily
+from hotel_demo.daily import CHECKS_DIR, daily
 from hotel_demo.paths import data_dir
 from hotel_demo.pipeline import deploy, train
 
@@ -28,6 +28,19 @@ def daily_env(tmp_path, monkeypatch):
     deploy(version=v1)
 
     return {"data": data_target, "mlflow": mlflow_target, "version": v1}
+
+
+def _check_files(directory: Path) -> list[str]:
+    """Source files in directory (bytecode caches are not part of the listing)."""
+    return sorted(p.name for p in directory.glob("*.py"))
+
+
+@pytest.fixture
+def checks_copy(tmp_path):
+    """A temporary checks directory holding a copy of the legacy checks."""
+    target = tmp_path / "checks"
+    shutil.copytree(CHECKS_DIR, target, ignore=shutil.ignore_patterns("__pycache__"))
+    return target
 
 
 def test_daily_writes_predictions_monitoring_and_jobs(daily_env):
@@ -67,12 +80,20 @@ def test_daily_writes_predictions_monitoring_and_jobs(daily_env):
         assert j["error"] is None
 
 
-def test_daily_dynamic_check_discovery(daily_env):
-    # Add a custom check to src/hotel_demo/checks
-    checks_dir = Path(__file__).resolve().parent.parent / "src" / "hotel_demo" / "checks"
-    checks_dir.mkdir(parents=True, exist_ok=True)
-    custom_check_path = checks_dir / "custom_test_check.py"
+def test_daily_default_discovery_runs_the_three_legacy_checks(daily_env):
+    listing_before = _check_files(CHECKS_DIR)
 
+    daily("2026-01-11")
+
+    jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
+    with jobs_file.open("r", encoding="utf-8") as f:
+        jobs_run = [json.loads(line)["job"] for line in f if line.strip()]
+    assert sorted(jobs_run) == ["accuracy", "cancellation_rate", "drift", "score"]
+    assert _check_files(CHECKS_DIR) == listing_before
+
+
+def test_daily_dynamic_check_discovery(daily_env, checks_copy):
+    listing_before = _check_files(CHECKS_DIR)
     check_code = """
 from typing import Any
 import json
@@ -93,56 +114,48 @@ def run(date: str) -> dict[str, Any]:
         f.write(json.dumps(record) + "\\n")
     return record
 """
-    custom_check_path.write_text(check_code, encoding="utf-8")
+    (checks_copy / "custom_test_check.py").write_text(check_code, encoding="utf-8")
 
-    try:
-        daily("2026-01-11")
+    daily("2026-01-11", checks_dir=checks_copy)
 
-        mon_file = data_dir() / "monitoring" / "2026-01-11.jsonl"
-        mon_lines = []
-        with mon_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    mon_lines.append(json.loads(line))
+    mon_file = data_dir() / "monitoring" / "2026-01-11.jsonl"
+    mon_lines = []
+    with mon_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                mon_lines.append(json.loads(line))
 
-        checks_run = {line["check"] for line in mon_lines}
-        assert "custom_test_check" in checks_run
+    checks_run = {line["check"] for line in mon_lines}
+    assert "custom_test_check" in checks_run
 
-        jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
-        with jobs_file.open("r", encoding="utf-8") as f:
-            jobs_run = [json.loads(line)["job"] for line in f if line.strip()]
-        assert "custom_test_check" in jobs_run
-
-    finally:
-        if custom_check_path.exists():
-            custom_check_path.unlink()
+    jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
+    with jobs_file.open("r", encoding="utf-8") as f:
+        jobs_run = [json.loads(line)["job"] for line in f if line.strip()]
+    assert "custom_test_check" in jobs_run
+    assert _check_files(CHECKS_DIR) == listing_before
 
 
-def test_daily_check_file_import_error_logs_failed_job_and_runs_others(daily_env):
-    checks_dir = Path(__file__).parent.parent / "src" / "hotel_demo" / "checks"
-    bad_check_path = checks_dir / "bad_syntax_check.py"
-    bad_check_path.write_text("invalid python syntax :::", encoding="utf-8")
+def test_daily_check_file_import_error_logs_failed_job_and_runs_others(daily_env, checks_copy):
+    listing_before = _check_files(CHECKS_DIR)
+    (checks_copy / "bad_syntax_check.py").write_text("invalid python syntax :::", encoding="utf-8")
 
-    try:
-        with pytest.raises(RuntimeError) as excinfo:
-            daily("2026-01-11")
-        assert "bad_syntax_check" in str(excinfo.value)
+    with pytest.raises(RuntimeError) as excinfo:
+        daily("2026-01-11", checks_dir=checks_copy)
+    assert "bad_syntax_check" in str(excinfo.value)
 
-        # Check that jobs file logged bad_syntax_check as failure
-        jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
-        with jobs_file.open("r", encoding="utf-8") as f:
-            jobs = [json.loads(line) for line in f if line.strip()]
+    # Check that jobs file logged bad_syntax_check as failure
+    jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
+    with jobs_file.open("r", encoding="utf-8") as f:
+        jobs = [json.loads(line) for line in f if line.strip()]
 
-        bad_job = next(j for j in jobs if j["job"] == "bad_syntax_check")
-        assert bad_job["status"] == "failure"
-        assert bad_job["error"] is not None
+    bad_job = next(j for j in jobs if j["job"] == "bad_syntax_check")
+    assert bad_job["status"] == "failure"
+    assert bad_job["error"] is not None
 
-        # Other checks (e.g. drift) still ran and logged to jobs
-        drift_job = next(j for j in jobs if j["job"] == "drift")
-        assert drift_job["status"] == "success"
-    finally:
-        if bad_check_path.exists():
-            bad_check_path.unlink()
+    # Other checks (e.g. drift) still ran and logged to jobs
+    drift_job = next(j for j in jobs if j["job"] == "drift")
+    assert drift_job["status"] == "success"
+    assert _check_files(CHECKS_DIR) == listing_before
 
 
 def test_daily_score_failure_still_runs_other_checks(daily_env):

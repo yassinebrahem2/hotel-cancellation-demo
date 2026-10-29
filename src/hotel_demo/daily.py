@@ -1,18 +1,32 @@
 """Daily job runner: runs scoring and legacy monitoring checks."""
 
 import datetime
-import importlib
+import importlib.util
 import json
-import sys
 from pathlib import Path
+from types import ModuleType
 
 from hotel_demo.paths import data_dir
 from hotel_demo.pipeline import score
 
+CHECKS_DIR = Path(__file__).parent / "checks"
 
-def daily(date: str) -> None:
+
+def _load_check(py_file: Path) -> ModuleType:
+    """Execute py_file as a fresh module named hotel_demo.checks.<stem>."""
+    mod_name = f"hotel_demo.checks.{py_file.stem}"
+    spec = importlib.util.spec_from_file_location(mod_name, py_file)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load check module {mod_name} from {py_file}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def daily(date: str, *, checks_dir: Path | None = None) -> None:
     """Run the daily scoring job and all legacy monitoring checks for date.
 
+    Checks are discovered from checks_dir (default: the package's checks directory).
     Logs execution of each job to data_dir() / "jobs" / f"{date}.jsonl".
     Raises RuntimeError if any step (score or any check) fails.
     """
@@ -52,24 +66,19 @@ def daily(date: str) -> None:
         errors.append(f"score: {exc}")
 
     # 2. Run dynamically discovered checks
-    checks_dir = Path(__file__).parent / "checks"
-    if checks_dir.exists():
-        importlib.invalidate_caches()
-        for py_file in sorted(checks_dir.glob("*.py")):
+    discovery_dir = CHECKS_DIR if checks_dir is None else checks_dir
+    if discovery_dir.exists():
+        for py_file in sorted(discovery_dir.glob("*.py")):
             if py_file.stem == "__init__":
                 continue
             job_name = py_file.stem
             chk_started = datetime.datetime.now(datetime.UTC).isoformat()
             try:
-                mod_name = f"hotel_demo.checks.{py_file.stem}"
-                if mod_name in sys.modules:
-                    mod = importlib.reload(sys.modules[mod_name])
-                else:
-                    mod = importlib.import_module(mod_name)
+                mod = _load_check(py_file)
                 job_name = getattr(mod, "CHECK_NAME", py_file.stem)
                 if not hasattr(mod, "run") or not callable(mod.run):
                     raise AttributeError(
-                        f"Check module {mod_name} does not expose a callable run(date)"
+                        f"Check module {mod.__name__} does not expose a callable run(date)"
                     )
                 mod.run(date)
                 chk_ended = datetime.datetime.now(datetime.UTC).isoformat()
