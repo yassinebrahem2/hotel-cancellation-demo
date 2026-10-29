@@ -194,3 +194,112 @@ def test_accuracy_check_no_data_reports_no_data_and_does_not_fire(checks_env):
     assert res["value"] is None
     assert res["threshold"] == 0.60
     assert res["detail"] == "no data"
+
+
+# Matured-label cases: synthetic booking IDs (>= 5000) and a check date whose 30-day
+# label window holds no fixture label, so only the rows written here are evaluated.
+MATURED_CHECK_DATE = "2026-03-01"
+MATURED = "2026-02-10"  # arrival before the check date: label is final
+NOT_MATURED = "2026-03-05"  # arrival after the check date: label may still change
+
+
+def _write_accuracy_case(rows: list[tuple[int, str | None, bool]]) -> None:
+    """Write labels released in the window, bookings and predictions for the rows.
+
+    Each row is (booking_id, arrival_date or None for a booking absent from the
+    bookings files, whether the prediction is correct). Every booking is canceled.
+    """
+    d = data_dir()
+    pd.DataFrame(
+        {
+            "booking_id": [b for b, _, _ in rows],
+            "is_canceled": 1,
+            "label_date": "2026-02-20",
+            "booking_changes": 0,
+        }
+    ).to_parquet(d / "labels" / "2026-02-20.parquet", index=False)
+    pd.DataFrame(
+        {
+            "booking_id": [b for b, arrival, _ in rows if arrival is not None],
+            "arrival_date": [arrival for _, arrival, _ in rows if arrival is not None],
+        }
+    ).to_parquet(d / "bookings" / "2026-02-01.parquet", index=False)
+    pred_dir = d / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "booking_id": [b for b, _, _ in rows],
+            "business_date": "2026-02-01",
+            "model_version": "1",
+            "p_cancel": [0.9 if correct else 0.1 for _, _, correct in rows],
+        }
+    ).to_parquet(pred_dir / "2026-02-01.parquet", index=False)
+
+
+def test_accuracy_check_excludes_labels_not_yet_matured(checks_env):
+    from hotel_demo.checks import accuracy
+
+    _write_accuracy_case(
+        [
+            (5000, MATURED, True),
+            (5001, NOT_MATURED, False),
+            (5002, NOT_MATURED, False),
+            (5003, NOT_MATURED, False),
+        ]
+    )
+
+    res = accuracy.run(MATURED_CHECK_DATE)
+    assert res["fired"] is False
+    assert res["value"] == 1.0
+    assert res["detail"] == {"total_evaluated": 1, "correct": 1}
+
+
+def test_accuracy_check_fires_on_wrong_matured_labels(checks_env):
+    from hotel_demo.checks import accuracy
+
+    _write_accuracy_case(
+        [
+            (5000, MATURED, False),
+            (5001, NOT_MATURED, True),
+            (5002, NOT_MATURED, True),
+            (5003, NOT_MATURED, True),
+        ]
+    )
+
+    res = accuracy.run(MATURED_CHECK_DATE)
+    assert res["fired"] is True
+    assert res["value"] == 0.0
+    assert res["detail"] == {"total_evaluated": 1, "correct": 0}
+
+
+def test_accuracy_check_treats_arrival_day_as_not_matured(checks_env):
+    from hotel_demo.checks import accuracy
+
+    _write_accuracy_case([(5000, MATURED, True), (5001, MATURED_CHECK_DATE, False)])
+
+    res = accuracy.run(MATURED_CHECK_DATE)
+    assert res["fired"] is False
+    assert res["value"] == 1.0
+    assert res["detail"] == {"total_evaluated": 1, "correct": 1}
+
+
+def test_accuracy_check_excludes_labels_of_unknown_bookings(checks_env):
+    from hotel_demo.checks import accuracy
+
+    _write_accuracy_case([(5000, MATURED, True), (5001, None, False)])
+
+    res = accuracy.run(MATURED_CHECK_DATE)
+    assert res["fired"] is False
+    assert res["value"] == 1.0
+    assert res["detail"] == {"total_evaluated": 1, "correct": 1}
+
+
+def test_accuracy_check_without_matured_labels_reports_no_data(checks_env):
+    from hotel_demo.checks import accuracy
+
+    _write_accuracy_case([(5000, NOT_MATURED, False), (5001, MATURED_CHECK_DATE, True)])
+
+    res = accuracy.run(MATURED_CHECK_DATE)
+    assert res["fired"] is False
+    assert res["value"] is None
+    assert res["detail"] == "no data"

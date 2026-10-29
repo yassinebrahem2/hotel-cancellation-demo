@@ -12,11 +12,30 @@ CHECK_NAME = "accuracy"
 THRESHOLD = 0.60
 
 
+def _matured_booking_ids(curr_date: datetime.date) -> pd.Series:
+    """Return the IDs of the bookings whose arrival date is before curr_date."""
+    b_dir = data_dir() / "bookings"
+    booking_files = sorted(b_dir.glob("*.parquet"))
+    if not booking_files:
+        return pd.Series(dtype="int64")
+    bookings = pd.concat(
+        [pd.read_parquet(f, columns=["booking_id", "arrival_date"]) for f in booking_files],
+        ignore_index=True,
+    )
+    arrival = pd.to_datetime(bookings["arrival_date"]).dt.date
+    return bookings.loc[arrival < curr_date, "booking_id"]
+
+
 def run(date: str) -> dict[str, Any]:
     """Run the accuracy check for the given date.
 
-    Measures accuracy over labels released in the last 30 days, joined on booking_id
-    to their predictions. Fires if value < 0.60.
+    Measures accuracy over matured labels released in the last 30 days, joined on
+    booking_id to their predictions. Fires if value < 0.60.
+    A label is matured when its booking's arrival date (from the bookings files) is
+    before the given date: the outcome is then final. Cancellations are labelled as
+    soon as they happen, so labels of bookings not yet arrived are mostly cancellations
+    and would skew the reading; a label whose booking is not in the bookings files is
+    not matured either.
     Appends the result record to data_dir() / "monitoring" / f"{date}.jsonl".
     """
     curr_date = datetime.date.fromisoformat(date)
@@ -32,6 +51,11 @@ def run(date: str) -> dict[str, Any]:
         window_labels = all_labels[
             (all_labels["label_date_dt"] >= start_date) & (all_labels["label_date_dt"] <= curr_date)
         ].copy()
+
+    if len(window_labels) > 0:
+        window_labels = window_labels[
+            window_labels["booking_id"].isin(_matured_booking_ids(curr_date))
+        ]
 
     p_dir = data_dir() / "predictions"
     pred_files = sorted(p_dir.glob("*.parquet"))
