@@ -67,7 +67,7 @@ def run(date: str) -> dict[str, Any]:
         cutoff_date = datetime.date.fromisoformat(cutoff_str)
         train_bookings = all_bookings[all_bookings["arrival_date_dt"] < cutoff_date]
     else:
-        train_bookings = all_bookings
+        train_bookings = None
 
     # 3. Read last 7 days of bookings up to date
     target_dates = [curr_date - datetime.timedelta(days=i) for i in range(7)]
@@ -85,31 +85,43 @@ def run(date: str) -> dict[str, Any]:
 
     curr_bookings = pd.concat(recent_dfs, ignore_index=True)
 
-    # 4. Compute two-sample KS statistic for each feature
-    stats: dict[str, float] = {}
+    # 4. Compute two-sample KS statistic for each feature; a feature with an empty
+    # sample, or no training window at all, gets no statistic rather than an invented one.
+    stats: dict[str, float | None] = {}
     for feat in DRIFT_FEATURES:
         s_curr = curr_bookings[feat].dropna().to_numpy()
-        s_train = train_bookings[feat].dropna().to_numpy()
+        s_train = train_bookings[feat].dropna().to_numpy() if train_bookings is not None else []
         if len(s_curr) == 0 or len(s_train) == 0:
-            stat = 0.0
+            stats[feat] = None
         else:
             res = ks_2samp(s_curr, s_train, nan_policy="omit")
-            stat = float(res.statistic)
-        stats[feat] = stat
+            stats[feat] = float(res.statistic)
 
-    max_stat = max(stats.values()) if stats else 0.0
-    fired = bool(any(s > THRESHOLD for s in stats.values()))
-
-    record = {
-        "check": CHECK_NAME,
-        "fired": fired,
-        "value": float(max_stat),
-        "threshold": float(THRESHOLD),
-        "detail": {
-            "features": stats,
-            "days_evaluated": days_evaluated,
-        },
-    }
+    computed = [s for s in stats.values() if s is not None]
+    detail: dict[str, Any] = {"features": stats, "days_evaluated": days_evaluated}
+    record: dict[str, Any]
+    if computed:
+        record = {
+            "check": CHECK_NAME,
+            "fired": bool(any(s > THRESHOLD for s in computed)),
+            "value": float(max(computed)),
+            "threshold": float(THRESHOLD),
+            "detail": detail,
+        }
+    else:
+        detail["reason"] = (
+            "the production model's run has no training window"
+            if train_bookings is None
+            else "no feature has samples in both the current and the training window"
+        )
+        record = {
+            "check": CHECK_NAME,
+            "fired": False,
+            "value": None,
+            "not_enough_data": True,
+            "threshold": float(THRESHOLD),
+            "detail": detail,
+        }
 
     mon_dir = data_dir() / "monitoring"
     mon_dir.mkdir(parents=True, exist_ok=True)

@@ -39,20 +39,31 @@ def run(date: str) -> dict[str, Any]:
     all_preds = pd.concat(dfs, ignore_index=True)
     total = len(all_preds)
     high_risk = int((all_preds["p_cancel"] >= 0.5).sum())
-    value = float((all_preds["p_cancel"] >= 0.5).mean()) if total > 0 else 0.0
-    fired = bool(value > THRESHOLD)
-
-    record = {
-        "check": CHECK_NAME,
-        "fired": fired,
-        "value": float(value),
-        "threshold": float(THRESHOLD),
-        "detail": {
-            "total_predictions": total,
-            "high_risk_predictions": high_risk,
-            "days_evaluated": days_evaluated,
-        },
+    detail: dict[str, Any] = {
+        "total_predictions": total,
+        "high_risk_predictions": high_risk,
+        "days_evaluated": days_evaluated,
     }
+    record: dict[str, Any]
+    if total > 0:
+        value = float((all_preds["p_cancel"] >= 0.5).mean())
+        record = {
+            "check": CHECK_NAME,
+            "fired": bool(value > THRESHOLD),
+            "value": value,
+            "threshold": float(THRESHOLD),
+            "detail": detail,
+        }
+    else:
+        detail["reason"] = "no predictions in the last 7 days"
+        record = {
+            "check": CHECK_NAME,
+            "fired": False,
+            "value": None,
+            "not_enough_data": True,
+            "threshold": float(THRESHOLD),
+            "detail": detail,
+        }
 
     mon_dir = data_dir() / "monitoring"
     mon_dir.mkdir(parents=True, exist_ok=True)
