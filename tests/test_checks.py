@@ -1,3 +1,4 @@
+import datetime
 import json
 import shutil
 from pathlib import Path
@@ -39,6 +40,20 @@ def _read_monitoring_lines(date: str) -> list[dict]:
     return lines
 
 
+def _assert_utc_iso_timestamp(
+    ts: str,
+    start: datetime.datetime | None = None,
+    end: datetime.datetime | None = None,
+) -> None:
+    dt = datetime.datetime.fromisoformat(ts)
+    assert dt.tzinfo is not None, f"Expected timezone-aware timestamp, got {ts}"
+    assert dt.utcoffset() == datetime.timedelta(0), f"Expected UTC offset 0, got {dt.utcoffset()}"
+    if start is not None:
+        assert start <= dt, f"Timestamp {dt} earlier than start {start}"
+    if end is not None:
+        assert dt <= end, f"Timestamp {dt} later than end {end}"
+
+
 def test_cancellation_rate_check_fires_and_stays_quiet(checks_env):
     from hotel_demo.checks import cancellation_rate
 
@@ -58,16 +73,19 @@ def test_cancellation_rate_check_fires_and_stays_quiet(checks_env):
     )
     df_quiet.to_parquet(pred_dir / "2026-01-11.parquet", index=False)
 
+    start = datetime.datetime.now(datetime.UTC)
     res_quiet = cancellation_rate.run("2026-01-11")
-    assert set(res_quiet.keys()) == {"check", "fired", "value", "threshold", "detail"}
+    end = datetime.datetime.now(datetime.UTC)
+    assert set(res_quiet.keys()) == {"check", "ran_at", "fired", "value", "threshold", "detail"}
     assert res_quiet["check"] == "cancellation_rate"
     assert res_quiet["fired"] is False
     assert res_quiet["value"] == 0.0
     assert res_quiet["threshold"] == 0.30
+    _assert_utc_iso_timestamp(res_quiet["ran_at"], start, end)
 
     lines = _read_monitoring_lines("2026-01-11")
     assert len(lines) == 1
-    assert set(lines[0].keys()) == {"check", "fired", "value", "threshold", "detail"}
+    assert set(lines[0].keys()) == {"check", "ran_at", "fired", "value", "threshold", "detail"}
     assert lines[0] == res_quiet
 
     # 2. Firing scenario: p_cancel >= 0.5 for 3 out of 4 (share = 0.75 > 0.30)
@@ -83,10 +101,13 @@ def test_cancellation_rate_check_fires_and_stays_quiet(checks_env):
     )
     df_fire.to_parquet(pred_dir / "2026-01-12.parquet", index=False)
 
+    start_fire = datetime.datetime.now(datetime.UTC)
     res_fire = cancellation_rate.run("2026-01-12")
+    end_fire = datetime.datetime.now(datetime.UTC)
     assert res_fire["fired"] is True
     assert res_fire["value"] == 0.75
     assert res_fire["threshold"] == 0.30
+    _assert_utc_iso_timestamp(res_fire["ran_at"], start_fire, end_fire)
 
 
 def test_drift_check_fires_and_stays_quiet(checks_env):
@@ -95,17 +116,20 @@ def test_drift_check_fires_and_stays_quiet(checks_env):
     assert drift.CHECK_NAME == "drift"
 
     # 1. Quiet scenario: bookings distribution across 2026-01-11 to 2026-01-15 matches training
+    start = datetime.datetime.now(datetime.UTC)
     res_quiet = drift.run("2026-01-15")
-    assert set(res_quiet.keys()) == {"check", "fired", "value", "threshold", "detail"}
+    end = datetime.datetime.now(datetime.UTC)
+    assert set(res_quiet.keys()) == {"check", "ran_at", "fired", "value", "threshold", "detail"}
     assert res_quiet["check"] == "drift"
     assert res_quiet["threshold"] == 0.15
     # The normal fixture does not drift significantly
     assert res_quiet["fired"] is False
     assert res_quiet["value"] <= 0.15
+    _assert_utc_iso_timestamp(res_quiet["ran_at"], start, end)
 
     lines = _read_monitoring_lines("2026-01-15")
     assert len(lines) == 1
-    assert set(lines[0].keys()) == {"check", "fired", "value", "threshold", "detail"}
+    assert set(lines[0].keys()) == {"check", "ran_at", "fired", "value", "threshold", "detail"}
     assert lines[0] == res_quiet
 
     # 2. Firing scenario: heavily drift adults and children on 2026-01-16
@@ -116,10 +140,13 @@ def test_drift_check_fires_and_stays_quiet(checks_env):
     drift_file = data_dir() / "bookings" / "2026-01-16.parquet"
     df.to_parquet(drift_file, index=False)
 
+    start_fire = datetime.datetime.now(datetime.UTC)
     res_fire = drift.run("2026-01-16")
+    end_fire = datetime.datetime.now(datetime.UTC)
     assert res_fire["fired"] is True
     assert res_fire["value"] > 0.15
     assert res_fire["threshold"] == 0.15
+    _assert_utc_iso_timestamp(res_fire["ran_at"], start_fire, end_fire)
 
 
 def test_accuracy_check_fires_and_stays_quiet(checks_env):
@@ -149,16 +176,19 @@ def test_accuracy_check_fires_and_stays_quiet(checks_env):
         )
     pd.DataFrame(pred_rows).to_parquet(pred_dir / "2026-01-11.parquet", index=False)
 
+    start = datetime.datetime.now(datetime.UTC)
     res_quiet = accuracy.run("2026-01-12")
-    assert set(res_quiet.keys()) == {"check", "fired", "value", "threshold", "detail"}
+    end = datetime.datetime.now(datetime.UTC)
+    assert set(res_quiet.keys()) == {"check", "ran_at", "fired", "value", "threshold", "detail"}
     assert res_quiet["check"] == "accuracy"
     assert res_quiet["threshold"] == 0.60
     assert res_quiet["fired"] is False
     assert res_quiet["value"] == 1.0
+    _assert_utc_iso_timestamp(res_quiet["ran_at"], start, end)
 
     lines = _read_monitoring_lines("2026-01-12")
     assert len(lines) == 1
-    assert set(lines[0].keys()) == {"check", "fired", "value", "threshold", "detail"}
+    assert set(lines[0].keys()) == {"check", "ran_at", "fired", "value", "threshold", "detail"}
     assert lines[0] == res_quiet
 
     # 2. Low accuracy scenario (fires, value < 0.60)
@@ -178,22 +208,28 @@ def test_accuracy_check_fires_and_stays_quiet(checks_env):
         )
     pd.DataFrame(bad_pred_rows).to_parquet(pred_dir / "2026-01-13.parquet", index=False)
 
+    start_fire = datetime.datetime.now(datetime.UTC)
     res_fire = accuracy.run("2026-01-13")
+    end_fire = datetime.datetime.now(datetime.UTC)
     assert res_fire["fired"] is True
     assert res_fire["value"] < 0.60
     assert res_fire["threshold"] == 0.60
+    _assert_utc_iso_timestamp(res_fire["ran_at"], start_fire, end_fire)
 
 
 def test_accuracy_check_no_data_reports_no_data_and_does_not_fire(checks_env):
     from hotel_demo.checks import accuracy
 
     # Date with no predictions or labels in window
+    start = datetime.datetime.now(datetime.UTC)
     res = accuracy.run("2025-01-01")
+    end = datetime.datetime.now(datetime.UTC)
     assert res["check"] == "accuracy"
     assert res["fired"] is False
     assert res["value"] is None
     assert res["threshold"] == 0.60
     assert res["detail"] == "no data"
+    _assert_utc_iso_timestamp(res["ran_at"], start, end)
 
 
 # Matured-label cases: synthetic booking IDs (>= 5000) and a check date whose 30-day
@@ -311,6 +347,8 @@ def _assert_not_enough_data(res: dict, check: str, date: str) -> None:
     assert res["value"] is None
     assert res["fired"] is False
     assert isinstance(res["detail"]["reason"], str)
+    assert "ran_at" in res
+    _assert_utc_iso_timestamp(res["ran_at"])
     assert _read_monitoring_lines(date) == [res]
 
 
@@ -379,3 +417,61 @@ def test_drift_check_without_training_window_reports_not_enough_data(checks_env,
 
     _assert_not_enough_data(res, "drift", "2026-01-15")
     assert res["detail"]["days_evaluated"]
+
+
+def test_running_check_twice_appends_second_line(checks_env):
+    from hotel_demo.checks import cancellation_rate
+
+    pred_dir = data_dir() / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(
+        {
+            "booking_id": [1, 2],
+            "business_date": "2026-01-11",
+            "model_version": "1",
+            "p_cancel": [0.1, 0.2],
+        }
+    )
+    df.to_parquet(pred_dir / "2026-01-11.parquet", index=False)
+
+    start1 = datetime.datetime.now(datetime.UTC)
+    res1 = cancellation_rate.run("2026-01-11")
+    end1 = datetime.datetime.now(datetime.UTC)
+
+    start2 = datetime.datetime.now(datetime.UTC)
+    res2 = cancellation_rate.run("2026-01-11")
+    end2 = datetime.datetime.now(datetime.UTC)
+
+    lines = _read_monitoring_lines("2026-01-11")
+    assert len(lines) == 2
+    assert lines[0] == res1
+    assert lines[1] == res2
+    _assert_utc_iso_timestamp(lines[0]["ran_at"], start1, end1)
+    _assert_utc_iso_timestamp(lines[1]["ran_at"], start2, end2)
+    assert lines[0]["ran_at"] <= lines[1]["ran_at"]
+
+
+def test_write_monitoring_line_stamps_ran_at_and_appends(checks_env):
+    from hotel_demo.monitoring import write_monitoring_line
+
+    record = {
+        "check": "custom_check",
+        "fired": False,
+        "value": 0.5,
+        "threshold": 1.0,
+        "detail": {"info": "test"},
+    }
+    start = datetime.datetime.now(datetime.UTC)
+    res = write_monitoring_line("2026-01-11", record)
+    end = datetime.datetime.now(datetime.UTC)
+
+    assert res["check"] == "custom_check"
+    assert res["fired"] is False
+    assert res["value"] == 0.5
+    assert res["threshold"] == 1.0
+    assert res["detail"] == {"info": "test"}
+    _assert_utc_iso_timestamp(res["ran_at"], start, end)
+
+    lines = _read_monitoring_lines("2026-01-11")
+    assert len(lines) == 1
+    assert lines[0] == res

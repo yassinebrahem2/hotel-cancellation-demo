@@ -1,3 +1,4 @@
+import datetime
 import json
 import shutil
 from pathlib import Path
@@ -44,7 +45,9 @@ def checks_copy(tmp_path):
 
 
 def test_daily_writes_predictions_monitoring_and_jobs(daily_env):
+    start = datetime.datetime.now(datetime.UTC)
     daily("2026-01-11")
+    end = datetime.datetime.now(datetime.UTC)
 
     # 1. Predictions file written
     pred_file = data_dir() / "predictions" / "2026-01-11.parquet"
@@ -63,6 +66,12 @@ def test_daily_writes_predictions_monitoring_and_jobs(daily_env):
     assert len(mon_lines) == 3
     checks_run = {line["check"] for line in mon_lines}
     assert checks_run == {"cancellation_rate", "drift", "accuracy"}
+    for line in mon_lines:
+        assert "ran_at" in line
+        dt = datetime.datetime.fromisoformat(line["ran_at"])
+        assert dt.tzinfo is not None
+        assert dt.utcoffset() == datetime.timedelta(0)
+        assert start <= dt <= end
 
     # 3. Jobs file written with jobs: score and the checks
     jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
@@ -91,13 +100,30 @@ def test_daily_default_discovery_runs_the_three_legacy_checks(daily_env):
     assert sorted(jobs_run) == ["accuracy", "cancellation_rate", "drift", "score"]
     assert _check_files(CHECKS_DIR) == listing_before
 
+    mon_file = data_dir() / "monitoring" / "2026-01-11.jsonl"
+    with mon_file.open("r", encoding="utf-8") as f:
+        mon_checks = [json.loads(line)["check"] for line in f if line.strip()]
+    assert sorted(mon_checks) == ["accuracy", "cancellation_rate", "drift"]
+
+
+def test_daily_replayed_day_appends_monitoring_lines(daily_env):
+    daily("2026-01-11")
+    mon_file = data_dir() / "monitoring" / "2026-01-11.jsonl"
+    with mon_file.open("r", encoding="utf-8") as f:
+        lines1 = [json.loads(line) for line in f if line.strip()]
+    assert len(lines1) == 3
+
+    daily("2026-01-11")
+    with mon_file.open("r", encoding="utf-8") as f:
+        lines2 = [json.loads(line) for line in f if line.strip()]
+    assert len(lines2) == 6
+
 
 def test_daily_dynamic_check_discovery(daily_env, checks_copy):
     listing_before = _check_files(CHECKS_DIR)
     check_code = """
 from typing import Any
-import json
-from hotel_demo.paths import data_dir
+from hotel_demo.monitoring import write_monitoring_line
 
 CHECK_NAME = "custom_test_check"
 
@@ -109,10 +135,7 @@ def run(date: str) -> dict[str, Any]:
         "threshold": 100.0,
         "detail": {"hello": "world"},
     }
-    mon_file = data_dir() / "monitoring" / f"{date}.jsonl"
-    with mon_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\\n")
-    return record
+    return write_monitoring_line(date, record)
 """
     (checks_copy / "custom_test_check.py").write_text(check_code, encoding="utf-8")
 
@@ -127,6 +150,11 @@ def run(date: str) -> dict[str, Any]:
 
     checks_run = {line["check"] for line in mon_lines}
     assert "custom_test_check" in checks_run
+    custom_line = next(line for line in mon_lines if line["check"] == "custom_test_check")
+    assert "ran_at" in custom_line
+    dt = datetime.datetime.fromisoformat(custom_line["ran_at"])
+    assert dt.tzinfo is not None
+    assert dt.utcoffset() == datetime.timedelta(0)
 
     jobs_file = data_dir() / "jobs" / "2026-01-11.jsonl"
     with jobs_file.open("r", encoding="utf-8") as f:

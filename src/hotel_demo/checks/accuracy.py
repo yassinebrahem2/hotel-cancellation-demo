@@ -1,11 +1,11 @@
 """Accuracy alert check."""
 
 import datetime
-import json
 from typing import Any
 
 import pandas as pd
 
+from hotel_demo.monitoring import write_monitoring_line
 from hotel_demo.paths import data_dir
 
 CHECK_NAME = "accuracy"
@@ -96,10 +96,4 @@ def run(date: str) -> dict[str, Any]:
         "detail": detail,
     }
 
-    mon_dir = data_dir() / "monitoring"
-    mon_dir.mkdir(parents=True, exist_ok=True)
-    mon_file = mon_dir / f"{date}.jsonl"
-    with mon_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
-
-    return record
+    return write_monitoring_line(date, record)
