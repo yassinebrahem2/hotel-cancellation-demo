@@ -303,3 +303,79 @@ def test_accuracy_check_without_matured_labels_reports_no_data(checks_env):
     assert res["fired"] is False
     assert res["value"] is None
     assert res["detail"] == "no data"
+
+
+def _assert_not_enough_data(res: dict, check: str, date: str) -> None:
+    assert res["check"] == check
+    assert res["not_enough_data"] is True
+    assert res["value"] is None
+    assert res["fired"] is False
+    assert isinstance(res["detail"]["reason"], str)
+    assert _read_monitoring_lines(date) == [res]
+
+
+def test_cancellation_rate_check_with_zero_predictions_reports_not_enough_data(checks_env):
+    from hotel_demo.checks import cancellation_rate
+
+    pred_dir = data_dir() / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"booking_id": [], "p_cancel": []}).astype(
+        {"booking_id": "int64", "p_cancel": "float64"}
+    ).to_parquet(pred_dir / "2026-01-11.parquet", index=False)
+
+    res = cancellation_rate.run("2026-01-11")
+
+    _assert_not_enough_data(res, "cancellation_rate", "2026-01-11")
+    assert res["threshold"] == 0.30
+    assert res["detail"]["total_predictions"] == 0
+
+
+def test_drift_check_with_empty_current_sample_reports_not_enough_data(checks_env):
+    from hotel_demo.checks import drift
+
+    bookings = pd.read_parquet(data_dir() / "bookings" / "2026-01-11.parquet")
+    bookings.iloc[0:0].to_parquet(data_dir() / "bookings" / "2026-02-01.parquet", index=False)
+
+    res = drift.run("2026-02-01")
+
+    _assert_not_enough_data(res, "drift", "2026-02-01")
+    assert res["threshold"] == 0.15
+    assert res["detail"]["features"] == {feat: None for feat in drift.DRIFT_FEATURES}
+    assert res["detail"]["days_evaluated"] == ["2026-02-01"]
+
+
+def test_drift_check_with_one_empty_feature_uses_max_of_the_others(checks_env):
+    from hotel_demo.checks import drift
+
+    bookings = pd.read_parquet(data_dir() / "bookings" / "2026-01-11.parquet")
+    bookings["children"] = float("nan")
+    bookings["adults"] = 50
+    bookings.to_parquet(data_dir() / "bookings" / "2026-02-01.parquet", index=False)
+
+    res = drift.run("2026-02-01")
+
+    features = res["detail"]["features"]
+    assert features["children"] is None
+    computed = [v for v in features.values() if v is not None]
+    assert len(computed) == len(drift.DRIFT_FEATURES) - 1
+    assert res["value"] == max(computed)
+    assert res["fired"] is True
+    assert "not_enough_data" not in res
+    assert _read_monitoring_lines("2026-02-01") == [res]
+
+
+def test_drift_check_without_training_window_reports_not_enough_data(checks_env, monkeypatch):
+    from types import SimpleNamespace
+
+    from hotel_demo.checks import drift
+
+    monkeypatch.setattr(
+        drift.MlflowClient,
+        "get_run",
+        lambda self, run_id: SimpleNamespace(data=SimpleNamespace(params={})),
+    )
+
+    res = drift.run("2026-01-15")
+
+    _assert_not_enough_data(res, "drift", "2026-01-15")
+    assert res["detail"]["days_evaluated"]
