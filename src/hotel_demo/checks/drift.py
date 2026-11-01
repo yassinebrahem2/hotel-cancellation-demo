@@ -1,7 +1,6 @@
 """Drift report check using two-sample Kolmogorov-Smirnov test."""
 
 import datetime
-import json
 from typing import Any
 
 import mlflow
@@ -10,6 +9,7 @@ from mlflow.tracking import MlflowClient
 from scipy.stats import ks_2samp
 
 from hotel_demo.features import MODEL_ALIAS, MODEL_NAME
+from hotel_demo.monitoring import write_monitoring_line
 from hotel_demo.paths import data_dir, tracking_uri
 
 CHECK_NAME = "drift"
@@ -123,10 +123,4 @@ def run(date: str) -> dict[str, Any]:
             "detail": detail,
         }
 
-    mon_dir = data_dir() / "monitoring"
-    mon_dir.mkdir(parents=True, exist_ok=True)
-    mon_file = mon_dir / f"{date}.jsonl"
-    with mon_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
-
-    return record
+    return write_monitoring_line(date, record)

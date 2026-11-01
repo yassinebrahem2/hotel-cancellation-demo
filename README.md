@@ -64,6 +64,50 @@ uv run ruff check
 uv run ruff format --check
 ```
 
+## Monitoring Checks
+
+Daily monitoring checks evaluate model performance, data drift, and prediction distributions, writing records to `monitoring/<date>.jsonl` (where the file name corresponds to the business date).
+
+### Monitoring Line Format
+
+Each line in `monitoring/<date>.jsonl` is a JSON object with the following fields:
+- `check`: the identifier of the check (e.g., `accuracy`, `cancellation_rate`, `drift`).
+- `ran_at`: real UTC time the check ran in ISO-8601 format with timezone offset (e.g. `2026-11-01T17:00:00+00:00`). While the file name carries the business date, `ran_at` records the actual execution time.
+- `fired`: boolean indicating whether the alert threshold was breached.
+- `value`: metric value computed by the check (`float` or `null`).
+- `threshold`: numeric threshold against which `value` is compared.
+- `detail`: dictionary containing detailed evaluation metadata, or `"no data"`.
+- `not_enough_data`: optional boolean (`true` when the check could not be computed due to insufficient data).
+
+Replaying a day appends new check lines to the file.
+
+### Adding New Checks
+
+New checks placed in `src/hotel_demo/checks/` are automatically discovered by `hotel-demo daily`. A check module defines `CHECK_NAME` and a `run(date: str) -> dict[str, Any]` entrypoint.
+
+New checks must write their monitoring records through `hotel_demo.monitoring`:
+
+```python
+from typing import Any
+
+from hotel_demo.monitoring import write_monitoring_line
+
+CHECK_NAME = "my_custom_check"
+
+
+def run(date: str) -> dict[str, Any]:
+    record = {
+        "check": CHECK_NAME,
+        "fired": False,
+        "value": 0.0,
+        "threshold": 1.0,
+        "detail": {},
+    }
+    return write_monitoring_line(date, record)
+```
+
+`write_monitoring_line` stamps `ran_at` with the current UTC timestamp and appends the line in a single write to `monitoring/<date>.jsonl`.
+
 ## Production Schedule & CI Workflows
 
 ### Production Schedule (`ops/schedule.toml`)
